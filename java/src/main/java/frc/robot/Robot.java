@@ -6,7 +6,6 @@ package frc.robot;
 
 import edu.wpi.first.util.sendable.SendableRegistry;
 import edu.wpi.first.wpilibj.TimedRobot;
-import edu.wpi.first.wpilibj.Timer;
 import edu.wpi.first.wpilibj.XboxController;
 import edu.wpi.first.wpilibj.drive.DifferentialDrive;
 import edu.wpi.first.wpilibj.motorcontrol.PWMSparkMax;
@@ -14,115 +13,145 @@ import edu.wpi.first.wpilibj.smartdashboard.SendableChooser;
 import edu.wpi.first.wpilibj.smartdashboard.SmartDashboard;
 
 /**
- * The VM is configured to automatically run this class, and to call the functions corresponding to
- * each mode, as described in the TimedRobot documentation. If you change the name of this class or
- * the package after creating this project, you must also update the build.gradle file in the
- * project.
+ * ShaqBot's two-motor arcade-drive program, using WPILib's timed lifecycle.
+ *
+ * <p>WPILib calls initialization methods when modes begin and periodic methods on its normal 20 ms
+ * loop. Hardware is constructed once and reused; do not allocate another controller for the same
+ * PWM channel inside a periodic method.
+ *
+ * <p>This program intentionally retains controller driving in {@link #robotPeriodic()}, including
+ * autonomous and test. Moving it to {@link #teleopPeriodic()} would change existing behavior. See
+ * {@code docs/STUDENT_GUIDE.md} for the control flow and practice exercises.
  */
 public class Robot extends TimedRobot {
-  private static final String kDefaultAuto = "Default";
-  private static final String kCustomAuto = "My Auto";
-  private String m_autoSelected;
-  private final SendableChooser<String> m_chooser = new SendableChooser<>();
+  // PWM channels on the roboRIO, not CAN device IDs.
+  private static final int LEFT_DRIVE_PWM_CHANNEL = 0;
+  private static final int RIGHT_DRIVE_PWM_CHANNEL = 1;
 
-  private final PWMSparkMax leftdrivemotor = new PWMSparkMax(0);
-  private final PWMSparkMax rightdrivemotor = new PWMSparkMax(1);
+  // USB slot assigned to the Xbox controller in the Driver Station.
+  private static final int DRIVER_CONTROLLER_PORT = 0;
+
+  // Scale joystick requests BEFORE DifferentialDrive applies deadband and input squaring.
+  // This is not a 60% final motor-output limit or a speed in meters per second.
+  private static final double DRIVE_INPUT_SCALE = 0.6;
+
+  // Chooser values are separate from their visible dashboard labels.
+  private static final String DEFAULT_AUTO = "Default";
+  private static final String CUSTOM_AUTO = "My Auto";
+
+  // Capture the selection on autonomous entry, rather than reading it on every loop.
+  private String selectedAuto;
+  private final SendableChooser<String> autoChooser = new SendableChooser<>();
+
+  // `final` prevents reference reassignment; these objects can still update hardware state.
+  private final PWMSparkMax leftDriveMotor = new PWMSparkMax(LEFT_DRIVE_PWM_CHANNEL);
+  private final PWMSparkMax rightDriveMotor = new PWMSparkMax(RIGHT_DRIVE_PWM_CHANNEL);
   private final DifferentialDrive robotDrive =
-    new DifferentialDrive(leftdrivemotor::set, rightdrivemotor::set);
-  private final XboxController m_controller = new XboxController(0);
-  private final Timer timer = new Timer();
+      new DifferentialDrive(leftDriveMotor::set, rightDriveMotor::set);
+  private final XboxController driverController = new XboxController(DRIVER_CONTROLLER_PORT);
 
+  /** Associates the motor objects with their drive helper for WPILib dashboard tooling. */
   public Robot() {
-    SendableRegistry.addChild(robotDrive, leftdrivemotor);
-    SendableRegistry.addChild(robotDrive, rightdrivemotor);
+    // A method reference such as leftDriveMotor::set lets the helper send a computed output
+    // to that motor. Register the child objects explicitly when using these setter functions.
+    SendableRegistry.addChild(robotDrive, leftDriveMotor);
+    SendableRegistry.addChild(robotDrive, rightDriveMotor);
   }
 
-
-  /**
-   * This function is run when the robot is first started up and should be used for any
-   * initialization code.
-   */
+  /** Publishes autonomous choices and configures motor direction once at program startup. */
   @Override
   public void robotInit() {
-    m_chooser.setDefaultOption("Default Auto", kDefaultAuto);
-    m_chooser.addOption("My Auto", kCustomAuto);
-    SmartDashboard.putData("Auto choices", m_chooser);
+    autoChooser.setDefaultOption("Default Auto", DEFAULT_AUTO);
+    autoChooser.addOption("My Auto", CUSTOM_AUTO);
+    SmartDashboard.putData("Auto choices", autoChooser);
 
-    leftdrivemotor.setInverted(true);
+    // Preserve this robot's existing left-side inversion; the right side stays uninverted.
+    // Electrical sign alone does not tell us wheel direction without knowing the drivetrain.
+    leftDriveMotor.setInverted(true);
   }
 
   /**
-   * This function is called every 20 ms, no matter the mode. Use this for items like diagnostics
-   * that you want ran during disabled, autonomous, teleoperated and test.
+   * Reads driver input and updates arcade drive each loop, after the mode-specific periodic method.
    *
-   * <p>This runs after the mode specific periodic functions, but before LiveWindow and
-   * SmartDashboard integrated updating.
+   * <p>For example, left Y = -0.5 and right X = 0.0 become forward = 0.3 and turn = 0.0. The
+   * two-argument {@code arcadeDrive} then applies its default deadband and sign-preserving input
+   * squaring, so these inputs are not the final PWM outputs.
+   *
+   * <p>This callback also runs while disabled; the roboRIO inhibits physical motor output in that
+   * state. Enabled autonomous and test still receive controller requests. Keep this placement for a
+   * behavior-preserving refactor; mode-specific driving is a separate feature change.
    */
   @Override
   public void robotPeriodic() {
-    robotDrive.arcadeDrive(-m_controller.getLeftY() * 0.6, -m_controller.getRightX() * 0.6);
+    // Keep both signs, the 0.6 scale, and the default arcade-drive input shaping unchanged.
+    double forwardInput = -driverController.getLeftY() * DRIVE_INPUT_SCALE;
+    double turnInput = -driverController.getRightX() * DRIVE_INPUT_SCALE;
+    robotDrive.arcadeDrive(forwardInput, turnInput);
   }
 
   /**
-   * This autonomous (along with the chooser code above) shows how to select between different
-   * autonomous modes using the dashboard. The sendable chooser code works with the Java
-   * SmartDashboard. If you prefer the LabVIEW Dashboard, remove all of the chooser code and
-   * uncomment the getString line to get the auto name from the text box below the Gyro
+   * Saves and logs the dashboard choice each time autonomous begins.
    *
-   * <p>You can add additional auto modes by adding additional comparisons to the switch structure
-   * below with additional strings. If using the SendableChooser make sure to add them to the
-   * chooser code above as well.
+   * <p>The visible "Default Auto" label supplies the value "Default". A future routine needs both a
+   * chooser option in {@link #robotInit()} and a matching case in {@link #autonomousPeriodic()}.
    */
   @Override
   public void autonomousInit() {
-    m_autoSelected = m_chooser.getSelected();
-    // m_autoSelected = SmartDashboard.getString("Auto Selector", kDefaultAuto);
-    System.out.println("Auto selected: " + m_autoSelected);
+    selectedAuto = autoChooser.getSelected();
+    System.out.println("Auto selected: " + selectedAuto);
   }
 
-  /** This function is called periodically during autonomous. */
+  /**
+   * Dispatches the saved autonomous selection; both routines are currently placeholders.
+   *
+   * <p>Neither branch commands a motor. Controller driving still runs in {@link #robotPeriodic()}
+   * afterward, so adding autonomous motor commands here requires a separate mode-control design.
+   */
   @Override
   public void autonomousPeriodic() {
-    switch (m_autoSelected) {
-      case kCustomAuto:
-        // Put custom auto code here
+    switch (selectedAuto) {
+      case CUSTOM_AUTO:
+        // Reserved for a future custom routine; intentionally no action today.
         break;
-      case kDefaultAuto:
+      case DEFAULT_AUTO:
       default:
-        // Put default auto code here
+        // Default and unrecognized non-null values take the same no-action path.
         break;
     }
   }
 
-  /** This function is called once when teleop is enabled. */
+  // Keep the empty lifecycle overrides as student extension points. Some inherited periodic
+  // implementations print a first-call message; deleting these would change console behavior.
+
+  /** Runs once on teleop entry; no additional setup is currently needed. */
   @Override
   public void teleopInit() {}
 
-  /** This function is called periodically during operator control. */
+  /** Runs each teleop loop; the existing drive update lives in {@link #robotPeriodic()}. */
   @Override
   public void teleopPeriodic() {}
 
-  /** This function is called once when the robot is disabled. */
+  /** Runs on disabled entry; this program has no additional state to reset. */
   @Override
   public void disabledInit() {}
 
-  /** This function is called periodically when disabled. */
+  /** Runs each disabled loop; no extra disabled-mode work is currently configured. */
   @Override
   public void disabledPeriodic() {}
 
-  /** This function is called once when test mode is enabled. */
+  /** Runs on test-mode entry; no custom test routine is currently configured. */
   @Override
   public void testInit() {}
 
-  /** This function is called periodically during test mode. */
+  /** Runs each test loop; controller driving still occurs in {@link #robotPeriodic()}. */
   @Override
   public void testPeriodic() {}
 
-  /** This function is called once when the robot is first started up. */
+  /** Runs once after robot initialization in simulation; no physics model is configured. */
   @Override
   public void simulationInit() {}
 
-  /** This function is called periodically whilst in simulation. */
+  /** Runs each simulation loop; this program does not calculate simulated sensor readings. */
   @Override
   public void simulationPeriodic() {}
 }

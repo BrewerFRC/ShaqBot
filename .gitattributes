@@ -1,0 +1,7 @@
+# Keep source and documentation consistent across Windows and Unix editors.
+*.java text eol=lf
+*.gradle text eol=lf
+*.md text eol=lf
+.editorconfig text eol=lf
+.gitattributes text eol=lf
+.gitignore text eol=lf
